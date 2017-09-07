@@ -6,7 +6,6 @@ import datetime  # 导入日期时间模块
 # end time为当前时间
 cTime = time.strftime("%H:%M:%S")
 cDate = time.strftime("%Y-%m-%d")
-print cTime
 if (cDate+' '+cTime)> (cDate+' 21:00:00'):
     startTime = cDate+" 21:00:00"
     endTime=cDate+' '+cTime
@@ -14,6 +13,16 @@ else:
     startTime =str(datetime.date.today()-datetime.timedelta(days=1))+" 21:00:00"
     endTime=cDate+' '+cTime
 
-print startTime
-print endTime
+d1 = datetime.datetime(2017, 8, 5,15,01,0)
+d2 = datetime.datetime(2017, 8, 5,15,06,0)
+print d1
+print d2
+print (d2-d1).seconds
 
+d3=time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(1502802000))
+
+print 'd3'
+print d3
+
+print datetime.datetime.fromtimestamp(1502802000)
+print datetime.datetime.fromtimestamp(1502802000-60)
