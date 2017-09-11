@@ -1,5 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
-
+import sys
 from gmsdk.api import StrategyBase
 #from gmsdk.gm import Bar
 import logging
@@ -44,7 +44,7 @@ class Mystrategy(StrategyBase):
 
         super(Mystrategy, self).__init__(*args, **kwargs)
 
-        self.positionTrend = pd.DataFrame(columns=['index', 'strdatetime','utcdatetime', 'open', 'high', 'low', 'close', 'position', 'k1', 'kk1',
+        self.positionTrend = pd.DataFrame(columns=['strdatetime','utcdatetime', 'open', 'high', 'low', 'close', 'position', 'k1', 'kk1',
                                          'kkk1', 'k2', 'kk2', 'do', 'ko']) #保存持仓数据，总共5列：date,time,symbol,longPosition,shortPosition
         self.dailyBar=pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position'])        #保存原始的1分钟Bar数据
         self.dailyBarMin=pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position'])     #保存多分钟合并的Bar数据，分钟数由K_min确定
@@ -60,12 +60,19 @@ class Mystrategy(StrategyBase):
         self.tradeZoneLow=0#保存交易区间的下端点，如果tradeZoneHige<=tradeZoneLow，表示当日没有非交易区间限制
         self.buyFlag=0#买卖标识，-1为卖，1为买
 
-        self.K_min=3 #采用多少分钟的K线，默认为3分钟，在on_bar中会判断并进行合并
+        #self.K_min=3 #采用多少分钟的K线，默认为3分钟，在on_bar中会判断并进行合并
+        self.K_min=self.config.getint('para', 'K_min') or 3
+        self.lastPositionDo= self.config.getfloat('para', 'lastPositionDo') or 0
+        self.lastPositionKo= self.config.getfloat('para', 'lastPositionKo') or 0
+        self.noticeMail=self.config.get('para','noticeMail')
+
         self.K_minCounter=0 #用来计算当前是合并周期内的第几根K线，在onBar中做判断使用
         self.last_update_time=datetime.datetime.now() #保存上一次 bar更新的时间，用来帮助判断是否出现空帧
 
-        #准备好数据和画布
-        self.dataPrepare()
+        self.exchange_id,self.sec_id,buf=self.subscribe_symbols.split('.',2)
+
+        #准备好数据，回测模式下不用准备
+        if self.mode != 4:self.dataPrepare()
         #self.pltPrepare()
 
     def on_login(self):
@@ -74,11 +81,18 @@ class Mystrategy(StrategyBase):
     def on_error(self, code, msg):
         pass
 
+    def on_backtest_finish(self, indicator):
+        pass
+
     def on_bar(self, bar):
         #实时只能取1分钟的K线，所以要先将1分钟线合并成多分钟K线，具体多少分钟由参数K_min定义
         #每次on_bar调用，先用数据保存到dailyBar中，再判断是否达到多分钟合并时间，是则进行合并，并执行一系列操作
-
         timenow=datetime.datetime.fromtimestamp(bar.utc_time)
+
+        if timenow.hour==21 and self.last_update_time.hour<21:
+            #每日晚上21点开盘时数据清零
+            self.dataReset()
+
         minutesDelta=int((timenow-self.last_update_time).seconds)/60
         if 2<=minutesDelta<10:
             self.insertEmptyBar(minutesDelta)
@@ -96,9 +110,15 @@ class Mystrategy(StrategyBase):
             #self.pltUpdate('down')#更新图片
             self.trendJudge()#趋势判断，在趋势判断中会给出buyFlag
             if self.buyFlag==1:                             #买
+                #买多，平空
+                self.open_long(self.exchange_id,self.sec_id,0,1)
+                self.close_short(self.exchange_id,self.sec_id,0,1)
                 self.buyFlag=0
                 pass
             elif self.buyFlag==-1:                          #卖
+                #多空，平多
+                self.open_short(self.exchange_id,self.sec_id,0,1)
+                self.close_long(self.exchange_id,self.sec_id,0,1)
                 self.buyFlag=0
                 pass
         else:
@@ -137,6 +157,50 @@ class Mystrategy(StrategyBase):
 #        self.positionTrend.to_csv('d:\positionTrend.csv', encoding='GB18030')
         pass
 
+    def dataReset(self):
+        '''
+        在每个交易开始时（晚上21点），重置缓存数据，包括
+        dailyBar，dailyBarMini，combinedBar,
+        self.K_trend=0 #当前的趋势，1表示上升，-1表示下降，初始为0
+        self.marketFlag=0 #上一波行情标志，1为反弹上涨，-1为到顶下跌
+        self.marketList = [] #用来保存每一次趋势的内容，包序号，x轴位置，时间，最高价，最低价，现价，类型
+                            #{'index','xpos','time','phigh','plow','pnow','type'}
+        self.trendList=[] #用来保存每一次趋势判断的情况
+        self.trendPeriod=0 #距离上波行情经过了几根K线
+        self.marketCount=0 #表示经过了几波行情
+        self.tradeZoneHigh=0 #保存交易区间的上端点
+        self.tradeZoneLow=0#保存交易区间的下端点，如果tradeZoneHige<=tradeZoneLow，表示当日没有非交易区间限制
+        self.buyFlag=0#买卖标识，-1为卖，1为买
+        self.K_minCounter=0 #用来计算当前是合并周期内的第几根K线，在onBar中做判断使用
+
+        positionTrend的数据要保留
+        :return:
+        '''
+        def cleanDf(df):
+            row=df.shape[0]
+            for i in range(row):
+                df.drop(i,inplace=True)
+        def cleanList(l):
+            n=len(l)
+            for i in range(n):
+                del l[0]
+
+        cleanDf(self.dailyBar)
+        cleanDf(self.dailyBarMin)
+        cleanDf(self.combindBar)
+        self.K_trend=0
+        self.marketFlag=0
+        cleanList(self.marketList)
+        cleanList(self.trendList)
+        self.trendPeriod = 0  # 距离上波行情经过了几根K线
+        self.marketCount = 0  # 表示经过了几波行情
+        self.tradeZoneHigh = 0  # 保存交易区间的上端点
+        self.tradeZoneLow = 0  # 保存交易区间的下端点，如果tradeZoneHige<=tradeZoneLow，表示当日没有非交易区间限制
+        self.buyFlag = 0  # 买卖标识，-1为卖，1为买
+        self.K_minCounter = 0  # 用来计算当前是合并周期内的第几根K线，在onBar中做判断使用
+
+
+
     #将dailyBarMin数据更新到缓存positionTrend
     def update_Position(self):
         barrow=self.dailyBarMin.shape[0]
@@ -150,7 +214,7 @@ class Mystrategy(StrategyBase):
 
         rownum=self.positionTrend.shape[0] #row是从0开始算
         if rownum<1:
-            databuf=[0,strdatetime,utcdatetime,open,high,low,close,position,0,0,0,0,0,0,0]
+            databuf=[strdatetime,utcdatetime,open,high,low,close,position,0,0,0,0,0,self.lastPositionDo,self.lastPositionKo]
         else:
             lastposition=self.positionTrend.ix[rownum-1,'position']
             lastdo=self.positionTrend.ix[rownum-1,'do']
@@ -178,7 +242,7 @@ class Mystrategy(StrategyBase):
                 kk2 = 0
             do = k1 + kk1 + kkk1 + lastdo
             ko = k2 + kk2 + kkk1 + lastko
-            databuf=[rownum,strdatetime,utcdatetime, open, high, low, close, position, k1, kk1, kkk1, k2, kk2, do, ko]
+            databuf=[strdatetime,utcdatetime, open, high, low, close, position, k1, kk1, kkk1, k2, kk2, do, ko]
 #            print("position updated")
 #            print databuf
         self.positionTrend.loc[rownum]=databuf
@@ -285,8 +349,13 @@ class Mystrategy(StrategyBase):
             elif self.marketCount<=3:
                 self.tradeZoneLow=max(self.tradeZoneLow,self.combindBar.ix[barrow-2]['low'])
             else:
-                #做买操作
-                self.buyFlag=1
+                prow=self.positionTrend.shape[0]
+                #做买操作，判断多仓是否连续三次增仓，或者空仓连续三次减仓
+                if (self.positionTrend.ix[prow-1]['do']>self.positionTrend.ix[prow-2]['do'] and
+                    self.positionTrend.ix[prow-2]['do']>self.positionTrend.ix[prow-3]['do']) or\
+                    (self.positionTrend.ix[prow-1]['ko']<self.positionTrend.ix[prow-2]['ko'] and
+                    self.positionTrend.ix[prow-2]['ko']<self.positionTrend.ix[prow-3]['ko']):
+                    self.buyFlag=1
                 pass
         elif self.trendList[-1]==-1 and self.trendList[-2]==1:#出现下跌行情
             self.marketFlag=-1
@@ -299,8 +368,13 @@ class Mystrategy(StrategyBase):
             elif self.marketCount<=3:
                 self.tradeZoneHigh=min(self.tradeZoneHigh,self.combindBar.ix[barrow-2]['high'])
             else:
-                #做卖操作
-                self.buyFlag=-1
+                prow = self.positionTrend.shape[0]
+                #做卖操作，判断多仓是否连续三次减仓，或者空仓连续三次增仓
+                if (self.positionTrend.ix[prow-1]['do']<self.positionTrend.ix[prow-2]['do'] and
+                    self.positionTrend.ix[prow-2]['do']<self.positionTrend.ix[prow-3]['do']) or\
+                    (self.positionTrend.ix[prow-1]['ko']>self.positionTrend.ix[prow-2]['ko'] and
+                    self.positionTrend.ix[prow-2]['ko']>self.positionTrend.ix[prow-3]['ko']):
+                    self.buyFlag=-1
                 pass
         else:pass
         # 有行情时，保存行情信息
@@ -428,6 +502,7 @@ class Mystrategy(StrategyBase):
         pass
 
 if __name__ == '__main__':
+    ''''
     myStrategy = Mystrategy(
         username='smartgang@126.com',
         password='39314656a',
@@ -436,5 +511,9 @@ if __name__ == '__main__':
         mode=4,#2为实时行情，3为模拟行情,4为回测
         td_addr=''
     )
+    '''
+    ini_file = sys.argv[1] if len(sys.argv) > 1 else 'pwconfig.ini'
+    logging.config.fileConfig(ini_file)
+    myStrategy = Mystrategy(config_file=ini_file)
     ret = myStrategy.run()
     print('exit code: ', ret)
