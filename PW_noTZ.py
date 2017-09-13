@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import sys
 from gmsdk.api import StrategyBase
 #from gmsdk.gm import Bar
@@ -124,17 +124,17 @@ class Mystrategy(StrategyBase):
             self.trendJudge()#趋势判断，在趋势判断中会给出buyFlag
             if self.buyFlag==1 :                             #买
                 # 加入交易区间的限制，在交易区间外才交易，或者无交易区间（high<=low)
-                if (bar.close >self.tradeZoneHigh or bar.close<self.tradeZoneLow or self.tradeZoneHigh<=self.tradeZoneLow):
+                #if (bar.close >self.tradeZoneHigh or bar.close<self.tradeZoneLow or self.tradeZoneHigh<=self.tradeZoneLow):
                     #买多，平空
-                    self.open_long(self.exchange_id,self.sec_id,0,1)
-                    self.close_short(self.exchange_id,self.sec_id,0,1)
+                self.open_long(self.exchange_id,self.sec_id,0,1)
+                self.close_short(self.exchange_id,self.sec_id,0,1)
                 self.buyFlag=0
             elif self.buyFlag==-1:                          #卖
                 #加入交易区间的限制，在交易区间外才交易，或者无交易区间（high<=low)
-                if (bar.close > self.tradeZoneHigh or bar.close < self.tradeZoneLow or self.tradeZoneHigh <= self.tradeZoneLow):
+                #if (bar.close > self.tradeZoneHigh or bar.close < self.tradeZoneLow or self.tradeZoneHigh <= self.tradeZoneLow):
                 #多空，平多
-                    self.open_short(self.exchange_id,self.sec_id,0,1)
-                    self.close_long(self.exchange_id,self.sec_id,0,1)
+                self.open_short(self.exchange_id,self.sec_id,0,1)
+                self.close_long(self.exchange_id,self.sec_id,0,1)
                 self.buyFlag=0
         else:
             pass
@@ -380,7 +380,7 @@ class Mystrategy(StrategyBase):
                 self.trendPeriod=0
                 self.marketCount+=1
             else:
-               # if self.trendPeriod < 3: return #前3波行情不做3根K线共用的限制，不加入trendPeriod的判断
+                #if self.trendPeriod < 3: return #前3波行情不做3根K线共用的限制，不加入trendPeriod的判断
                 self.trendPeriod = 0
                 self.marketCount += 1
                 self.marketFlag = 1
