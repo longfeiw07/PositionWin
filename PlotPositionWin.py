@@ -104,10 +104,10 @@ class PlotCandlesticks():
         self._Axes.set_axisbelow(True)  # 网格线放在底层
         #   设置两个坐标轴上的网格线
         # ==================================================================================================================================================
-        self._xAxis.grid(True, 'major', color='0.3', linestyle='solid', linewidth=0.2)
-        self._xAxis.grid(True, 'minor', color='0.3', linestyle='dotted', linewidth=0.1)
-        self._yAxis.grid(True, 'major', color='0.3', linestyle='solid', linewidth=0.2)
-        self._yAxis.grid(True, 'minor', color='0.3', linestyle='dotted', linewidth=0.1)
+        self._xAxis.grid(True, 'major', color='0.3', linestyle='solid', linewidth=0.1)
+        #self._xAxis.grid(True, 'minor', color='0.3', linestyle='dotted', linewidth=0.05)
+        self._yAxis.grid(True, 'major', color='0.3', linestyle='solid', linewidth=0.1)
+        #self._yAxis.grid(True, 'minor', color='0.3', linestyle='dotted', linewidth=0.05)
         self._yAxis.set_label_position('left')
         self._Axes.set_label(self._name)
         self._compute_size()

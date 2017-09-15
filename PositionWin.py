@@ -65,6 +65,10 @@ class Mystrategy(StrategyBase):
         self.lastPositionDo= self.config.getfloat('para', 'lastPositionDo') or 0
         self.lastPositionKo= self.config.getfloat('para', 'lastPositionKo') or 0
         self.noticeMail=self.config.get('para','noticeMail')
+        self.tradeStartHour=self.config.getint('para','tradeStartHour')
+        self.tradeStartMin=self.config.getint('para','tradeStartMin')
+        self.tradeEndHour=self.config.getint('para','tradeEndHour')
+        self.tradeEndMin=self.config.getint('para','tradeEndMin')
 
         self.K_minCounter=0 #用来计算当前是合并周期内的第几根K线，在onBar中做判断使用
         self.last_update_time=datetime.datetime.now() #保存上一次 bar更新的时间，用来帮助判断是否出现空帧
@@ -90,12 +94,12 @@ class Mystrategy(StrategyBase):
         #每次on_bar调用，先用数据保存到dailyBar中，再判断是否达到多分钟合并时间，是则进行合并，并执行一系列操作
         timenow=datetime.datetime.fromtimestamp(bar.utc_time)
 
-        if timenow.hour==21 and self.last_update_time.hour<21:
+        if timenow.hour==self.tradeStartHour and self.last_update_time.hour!=self.tradeStartHour:
             #每日晚上21点开盘时数据清零
             self.dataReset()
 
         #每日14：58分时，平掉所有持仓
-        if timenow.hour==14 and timenow.minute==58:
+        if timenow.hour==self.tradeEndHour and timenow.minute==self.tradeEndMin:
             self.closeAllPosition()
             self.dailyBar.to_csv("dailyBar"+timenow.strftime("%Y%m%d")+'.csv',encoding='GB18030')
             self.dailyBarMin.to_csv("dailyBarMin" + timenow.strftime("%Y%m%d") + '.csv', encoding='GB18030')
@@ -123,18 +127,26 @@ class Mystrategy(StrategyBase):
             #self.pltUpdate('down')#更新图片
             self.trendJudge()#趋势判断，在趋势判断中会给出buyFlag
             if self.buyFlag==1 :                             #买
+                #1.1版本，平仓无交易区间限制，开仓才有交易区间限制
+                #上涨趋势中，判断是否持有空仓，有的话平掉空仓
+                position=self.get_position(self.exchange_id,self.sec_id,2)
+                if position :
+                    self.close_short(self.exchange_id,self.sec_id,0,position.volume)
                 # 加入交易区间的限制，在交易区间外才交易，或者无交易区间（high<=low)
                 if (bar.close >self.tradeZoneHigh or bar.close<self.tradeZoneLow or self.tradeZoneHigh<=self.tradeZoneLow):
-                    #买多，平空
+                    #买多
                     self.open_long(self.exchange_id,self.sec_id,0,1)
-                    self.close_short(self.exchange_id,self.sec_id,0,1)
                 self.buyFlag=0
             elif self.buyFlag==-1:                          #卖
-                #加入交易区间的限制，在交易区间外才交易，或者无交易区间（high<=low)
+                 # 1.1版本，平仓无交易区间限制，开仓才有交易区间限制
+                # 下跌趋势中，判断是否持有多仓，有的话平掉多仓
+                position = self.get_position(self.exchange_id, self.sec_id, 1)
+                if position:
+                    self.close_long(self.exchange_id, self.sec_id, 0, position.volume)
+                # 加入交易区间的限制，在交易区间外才交易，或者无交易区间（high<=low)
                 if (bar.close > self.tradeZoneHigh or bar.close < self.tradeZoneLow or self.tradeZoneHigh <= self.tradeZoneLow):
                 #多空，平多
                     self.open_short(self.exchange_id,self.sec_id,0,1)
-                    self.close_long(self.exchange_id,self.sec_id,0,1)
                 self.buyFlag=0
         else:
             pass
@@ -153,7 +165,7 @@ class Mystrategy(StrategyBase):
             startTime = str(datetime.date.today() - datetime.timedelta(days=1)) + " 21:00:00"
         #取数并装入缓存中
         endTime = (datetime.datetime.now() - datetime.timedelta(seconds=20)).strftime("%Y-%m-%d %H:%M:%S")
-        bars = self.get_bars("DCE.jm1801", 60, startTime, endTime)
+        bars = self.get_bars(self.exchange_id+'.'+self.sec_id, 60, startTime, endTime)
         rownum=0
         for bar in bars:
             rownum = self.update_dailyBar(bar)
@@ -380,17 +392,23 @@ class Mystrategy(StrategyBase):
                 self.trendPeriod=0
                 self.marketCount+=1
             else:
-               # if self.trendPeriod < 3: return #前3波行情不做3根K线共用的限制，不加入trendPeriod的判断
+                if self.trendPeriod < 3: return #前3波行情不做3根K线共用的限制，不加入trendPeriod的判断
                 self.trendPeriod = 0
                 self.marketCount += 1
                 self.marketFlag = 1
                 prow=self.positionTrend.shape[0]
+                '''
                 #做买操作，判断多仓是否连续三次增仓，或者空仓连续三次减仓
                 if (self.positionTrend.ix[prow-1]['do']>self.positionTrend.ix[prow-2]['do'] and
                     self.positionTrend.ix[prow-2]['do']>self.positionTrend.ix[prow-3]['do']) or\
                     (self.positionTrend.ix[prow-1]['ko']<self.positionTrend.ix[prow-2]['ko'] and
                     self.positionTrend.ix[prow-2]['ko']<self.positionTrend.ix[prow-3]['ko']):
                     self.buyFlag=1
+              '''
+                #1.1版本，改为当前K线下多仓减空仓大于上一K线多仓减空仓
+                if (self.positionTrend.ix[prow - 1]['do'] - self.positionTrend.ix[prow - 1]['ko']) >  \
+                        (self.positionTrend.ix[prow - 2]['do'] - self.positionTrend.ix[prow - 2]['ko']):
+                    self.buyFlag = 1
                 pass
         elif self.trendList[-1]==-1 and self.trendList[-2]==1:#出现下跌行情
             barrow = self.combindBar.shape[0]
@@ -403,17 +421,23 @@ class Mystrategy(StrategyBase):
                 self.marketCount += 1
                 self.trendPeriod = 0
             else:
-                #if self.trendPeriod < 3: return  # 前3波行情不做3根K线共用的限制，不加入trendPeriod的判断
+                if self.trendPeriod < 3: return  # 前3波行情不做3根K线共用的限制，不加入trendPeriod的判断
                 prow = self.positionTrend.shape[0]
                 self.marketFlag = -1
                 self.marketCount += 1
                 self.trendPeriod = 0
+                '''
                 #做卖操作，判断多仓是否连续三次减仓，或者空仓连续三次增仓
                 if (self.positionTrend.ix[prow-1]['do']<self.positionTrend.ix[prow-2]['do'] and
                     self.positionTrend.ix[prow-2]['do']<self.positionTrend.ix[prow-3]['do']) or\
                     (self.positionTrend.ix[prow-1]['ko']>self.positionTrend.ix[prow-2]['ko'] and
                     self.positionTrend.ix[prow-2]['ko']>self.positionTrend.ix[prow-3]['ko']):
                     self.buyFlag=-1
+              '''
+                # 1.1版本，改为当前K线下多仓减空仓大于上一K线多仓减空仓
+                if (self.positionTrend.ix[prow - 1]['ko'] - self.positionTrend.ix[prow - 1]['do']) > \
+                        (self.positionTrend.ix[prow - 2]['ko'] - self.positionTrend.ix[prow - 2]['do']):
+                    self.buyFlag = -1
                 pass
         else:pass
         # 有行情时，保存行情信息

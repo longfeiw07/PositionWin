@@ -2,6 +2,8 @@
 import time
 import datetime  # 导入日期时间模块
 
+'''
+时间处理：
 # 先处理时间，判断当前时间是否在当天晚上21点到24点之间，如果是，start time为当天21点，如果不是，start time为前一天21天
 # end time为当前时间
 cTime = time.strftime("%H:%M:%S")
@@ -26,3 +28,10 @@ print d3
 
 print datetime.datetime.fromtimestamp(1502802000)
 print datetime.datetime.fromtimestamp(1502802000-60)
+'''
+s='DCE.J.bar.60'
+a,b,c= s.split('.',2)
+print a
+print b
+print c
+
