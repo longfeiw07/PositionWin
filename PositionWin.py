@@ -15,7 +15,7 @@ import matplotlib.finance as mpf
 from matplotlib.pylab import date2num
 import datetime
 import time
-
+import MAtest as ma
 '''
 Steps:
     1.实时更新打印：计算仓位和开收盘价，实时打印
@@ -44,11 +44,12 @@ class Mystrategy(StrategyBase):
 
         super(Mystrategy, self).__init__(*args, **kwargs)
 
-        self.positionTrend = pd.DataFrame(columns=['strdatetime','utcdatetime', 'open', 'high', 'low', 'close', 'position', 'k1', 'kk1',
-                                         'kkk1', 'k2', 'kk2', 'do', 'ko']) #保存持仓数据，总共5列：date,time,symbol,longPosition,shortPosition
-        self.dailyBar=pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position'])        #保存原始的1分钟Bar数据
-        self.dailyBarMin=pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position'])     #保存多分钟合并的Bar数据，分钟数由K_min确定
-        self.combindBar =pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position'])      #合并后的数据
+        self.positionTrend = pd.DataFrame(columns=['strdatetime','utcdatetime', 'open', 'high', 'low', 'close', 'position', 'volume','do', 'ko','delta']) #保存持仓数据，总共5列：date,time,symbol,longPosition,shortPosition
+        self.dailyBar=pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position','volume'])        #保存原始的1分钟Bar数据
+        self.dailyBarMin=pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position','volume'])     #保存多分钟合并的Bar数据，分钟数由K_min确定
+        self.combindBar =pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position','volume'])      #合并后的数据
+        self.MACD=pd.DataFrame(columns=['strdatetime','utcdatetime','close','MACD','DEA','HIST','sema','lema'])
+        self.KDJ=pd.DataFrame(columns=['strdatetime','utcdatetime','lowL','highL','RSV','KDJ_K','KDJ_D','KDJ_J'])
         self.K_trend=0 #当前的趋势，1表示上升，-1表示下降，初始为0
         self.marketFlag=0 #上一波行情标志，1为反弹上涨，-1为到顶下跌
         self.marketList = [] #用来保存每一次趋势的内容，包序号，x轴位置，时间，最高价，最低价，现价，类型
@@ -69,12 +70,12 @@ class Mystrategy(StrategyBase):
         self.tradeStartMin=self.config.getint('para','tradeStartMin')
         self.tradeEndHour=self.config.getint('para','tradeEndHour')
         self.tradeEndMin=self.config.getint('para','tradeEndMin')
+        self.backwardDay=self.config.getint('para','backwardDay')
 
         self.K_minCounter=0 #用来计算当前是合并周期内的第几根K线，在onBar中做判断使用
         self.last_update_time=datetime.datetime.now() #保存上一次 bar更新的时间，用来帮助判断是否出现空帧
 
         self.exchange_id,self.sec_id,buf=self.subscribe_symbols.split('.',2)
-
         #准备好数据，回测模式下不用准备
         if self.mode != 4:self.dataPrepare()
         #self.pltPrepare()
@@ -101,13 +102,13 @@ class Mystrategy(StrategyBase):
         #每日14：58分时，平掉所有持仓
         if timenow.hour==self.tradeEndHour and timenow.minute==self.tradeEndMin:
             self.closeAllPosition()
-            self.dailyBar.to_csv("dailyBar"+timenow.strftime("%Y%m%d")+'.csv',encoding='GB18030')
-            self.dailyBarMin.to_csv("dailyBarMin" + timenow.strftime("%Y%m%d") + '.csv', encoding='GB18030')
-            self.combindBar.to_csv("combindBar"+timenow.strftime("%Y%m%d")+'.csv',encoding='GB18030')
+            #self.dailyBar.to_csv("dailyBar"+timenow.strftime("%Y%m%d")+'.csv',encoding='GB18030')
+            #self.dailyBarMin.to_csv("dailyBarMin" + timenow.strftime("%Y%m%d") + '.csv', encoding='GB18030')
+            #self.combindBar.to_csv("combindBar"+timenow.strftime("%Y%m%d")+'.csv',encoding='GB18030')
             print timenow.strftime("%Y%m%d")
             print self.tradeZoneHigh
             print self.tradeZoneLow
-            print '-------------------------------'
+            #print '-------------------------------'
             #self.pltUpdate()
 
         minutesDelta=int((timenow-self.last_update_time).seconds)/60
@@ -124,29 +125,15 @@ class Mystrategy(StrategyBase):
             #self.pltUpdate('up')
             if self.combineBar() and self.mode!=4:self.pltUpdate()#更新combinedBar
             self.update_Position() #更新positionTrend,postion要使用dailyBarMin来计算，所以要在update_dailyBarMin后调用
+            self.updateMACD()
+            self.updateKDJ()
             #self.pltUpdate('down')#更新图片
             self.trendJudge()#趋势判断，在趋势判断中会给出buyFlag
             if self.buyFlag==1 :                             #买
-                #1.1版本，平仓无交易区间限制，开仓才有交易区间限制
-                #上涨趋势中，判断是否持有空仓，有的话平掉空仓
-                position=self.get_position(self.exchange_id,self.sec_id,2)
-                if position :
-                    self.close_short(self.exchange_id,self.sec_id,0,position.volume)
-                # 加入交易区间的限制，在交易区间外才交易，或者无交易区间（high<=low)
-                if (bar.close >self.tradeZoneHigh or bar.close<self.tradeZoneLow or self.tradeZoneHigh<=self.tradeZoneLow):
-                    #买多
-                    self.open_long(self.exchange_id,self.sec_id,0,1)
+                self.buyJudge(bar)
                 self.buyFlag=0
             elif self.buyFlag==-1:                          #卖
-                 # 1.1版本，平仓无交易区间限制，开仓才有交易区间限制
-                # 下跌趋势中，判断是否持有多仓，有的话平掉多仓
-                position = self.get_position(self.exchange_id, self.sec_id, 1)
-                if position:
-                    self.close_long(self.exchange_id, self.sec_id, 0, position.volume)
-                # 加入交易区间的限制，在交易区间外才交易，或者无交易区间（high<=low)
-                if (bar.close > self.tradeZoneHigh or bar.close < self.tradeZoneLow or self.tradeZoneHigh <= self.tradeZoneLow):
-                #多空，平多
-                    self.open_short(self.exchange_id,self.sec_id,0,1)
+                self.sellJudge(bar)
                 self.buyFlag=0
         else:
             pass
@@ -154,28 +141,41 @@ class Mystrategy(StrategyBase):
 
     #开始运行时，准备好数据，主要是把当天的数据加载到缓存中
     def dataPrepare(self):
+        '''
+        20170919:增加backwardDay
+        1、加载到当天开盘前的数据，合成dailyBarMin和position，计算MACD和KDJ，MACD和KDJ的计算方式采用一次性全部计算。
+        2、如果是实盘模式，要清除数据缓存，然后再加载当天从开盘到当前时间的数据，计算判决数据，不触发下单。MACD和KDJ的计算方式采用单个计算
+            `1、判断是回测模式还是实盘模式，回测模式下startTime为回测的starttime-backwardDay，endtime为回测模式的starttime
+            2、实盘模式下starttime为timenow-backwardDay，endtime为当天的开盘时间
+        :return:
+        '''
         #先处理时间，判断当前时间是否在当天晚上21点到24点之间，如果是，start time为当天21点，如果不是，start time为前一天21天
         #end time为当前时间
-        cTime = time.strftime("%H:%M:%S")
-        cDate = time.strftime("%Y-%m-%d")
-        print cTime
-        if (cDate + ' ' + cTime) > (cDate + ' 21:00:00'):
-            startTime = cDate + " 21:00:00"
+        startTime = datetime.time(self.tradeEndHour, self.tradeStartMin, 0).strftime("%H:%M:%S")
+        if self.mode==4:
+            d, t = self.start_time.split(' ', 1)
+            y, m, d = d.split('-', 2)
+            d = datetime.date(int(y), int(m), int(d))
+            startDate=(d-datetime.timedelta(days=self.backwardDay)).strftime("%Y-%m-%d")
+            endTime=self.start_time
         else:
-            startTime = str(datetime.date.today() - datetime.timedelta(days=1)) + " 21:00:00"
-        #取数并装入缓存中
-        endTime = (datetime.datetime.now() - datetime.timedelta(seconds=20)).strftime("%Y-%m-%d %H:%M:%S")
-        bars = self.get_bars(self.exchange_id+'.'+self.sec_id, 60, startTime, endTime)
+            startDate=(datetime.date.today()-datetime.timedelta(days=self.backwardDay)).strftime("%Y-%m-%d")
+            endTime=datetime.date.today().strftime("%Y-%m-%d")+' '+startTime
+        sT=startDate+' '+startTime
+        bars = self.get_bars(self.exchange_id+'.'+self.sec_id, 60, sT, endTime)
+        #这里数据只用来计算position,macd和kdj
         rownum=0
         for bar in bars:
             rownum = self.update_dailyBar(bar)
             if rownum % self.K_min == 0 and rownum >= self.K_min:
                 self.update_dailyBarMin(bar)
-                self.combineBar()  # 更新combinedBar
                 self.update_Position()  # 更新positionTrend
-                self.trendJudge() #只做趋势判断，不做买卖
-        #lastdatetime=self.dailyBar.ix[rownum,'utcdatetime']
-        #lasttime=self.dailyBar.ix[rownum,'time'] #默许rownum是有值的，需要再考虑没有值的情况
+        self.prepareMACD()
+        self.prepareKDJ()
+        self.dataReset()
+        #下面要再做实盘下当天数据的处理
+        if self.mode==2:
+            pass
         if rownum>0:
             self.last_update_time = datetime.datetime.fromtimestamp(self.dailyBar.ix[rownum-1,'utcdatetime'])
         print("------------------------data prepared-----------------------------")
@@ -200,7 +200,7 @@ class Mystrategy(StrategyBase):
         self.buyFlag=0#买卖标识，-1为卖，1为买
         self.K_minCounter=0 #用来计算当前是合并周期内的第几根K线，在onBar中做判断使用
 
-        positionTrend的数据要保留
+        positionTrend,MACD，KDJ的数据要保留
         :return:
         '''
         def cleanDf(df):
@@ -255,10 +255,11 @@ class Mystrategy(StrategyBase):
         low=self.dailyBarMin.ix[barrow-1,'low']
         close=self.dailyBarMin.ix[barrow-1,'close']
         position=self.dailyBarMin.ix[barrow-1,'position']
+        volume=self.dailyBarMin.ix[barrow-1,'volume']
 
         rownum=self.positionTrend.shape[0] #row是从0开始算
         if rownum<1:
-            databuf=[strdatetime,utcdatetime,open,high,low,close,position,0,0,0,0,0,self.lastPositionDo,self.lastPositionKo]
+            databuf=[strdatetime,utcdatetime,open,high,low,close,position,volume,self.lastPositionDo,self.lastPositionKo]
         else:
             lastposition=self.positionTrend.ix[rownum-1,'position']
             lastdo=self.positionTrend.ix[rownum-1,'do']
@@ -286,7 +287,7 @@ class Mystrategy(StrategyBase):
                 kk2 = 0
             do = k1 + kk1 + kkk1 + lastdo
             ko = k2 + kk2 + kkk1 + lastko
-            databuf=[strdatetime,utcdatetime, open, high, low, close, position, k1, kk1, kkk1, k2, kk2, do, ko]
+            databuf=[strdatetime,utcdatetime, open, high, low, close, position, volume, do, ko]
 #            print("position updated")
 #            print databuf
         self.positionTrend.loc[rownum]=databuf
@@ -295,7 +296,7 @@ class Mystrategy(StrategyBase):
     #更新dailyBar
     def update_dailyBar(self,bar):
         rownum=self.dailyBar.shape[0]
-        self.dailyBar.loc[rownum] =[bar.strtime,bar.utc_time, bar.open, bar.high, bar.low, bar.close, bar.position]
+        self.dailyBar.loc[rownum] =[bar.strtime,bar.utc_time, bar.open, bar.high, bar.low, bar.close, bar.position,bar.volume]
         self.K_minCounter+=1
 #        print("dailyBar updated")
 #        print self.dailyBar.loc[rownum]
@@ -316,10 +317,11 @@ class Mystrategy(StrategyBase):
             [self.dailyBar.ix[rownum - self.K_min]['strdatetime'],
              self.dailyBar.ix[rownum - self.K_min]['utcdatetime'],
              self.dailyBar.ix[rownum - self.K_min]['open'],  # 取合并周期内第一条K线的开盘
-             max(self.dailyBar.iloc[rownum - self.K_min:rownum ]['high']),  # 合并周期内最高价
-             min(self.dailyBar.iloc[rownum - self.K_min:rownum ]['low']),  # 合并周期内的最低价
+             max(self.dailyBar.iloc[rownum - self.K_min:rownum]['high']),  # 合并周期内最高价
+             min(self.dailyBar.iloc[rownum - self.K_min:rownum]['low']),  # 合并周期内的最低价
              bar.close,  # 最后一条K线的收盘价
-             bar.position, ]  # 最后一条K线的仓位值
+             bar.position, # 最后一条K线的仓位值
+             sum(self.dailyBar.iloc[rownum -self.K_min:rownum]['volume'])] #v1.2版本加入成交量数据
         self.K_minCounter=0
         #print("dailyBarMin updated")
         #print self.dailyBarMin.loc[rownum/self.K_min-1]
@@ -396,7 +398,6 @@ class Mystrategy(StrategyBase):
                 self.trendPeriod = 0
                 self.marketCount += 1
                 self.marketFlag = 1
-                prow=self.positionTrend.shape[0]
                 '''
                 #做买操作，判断多仓是否连续三次增仓，或者空仓连续三次减仓
                 if (self.positionTrend.ix[prow-1]['do']>self.positionTrend.ix[prow-2]['do'] and
@@ -406,9 +407,7 @@ class Mystrategy(StrategyBase):
                     self.buyFlag=1
               '''
                 #1.1版本，改为当前K线下多仓减空仓大于上一K线多仓减空仓
-                if (self.positionTrend.ix[prow - 1]['do'] - self.positionTrend.ix[prow - 1]['ko']) >  \
-                        (self.positionTrend.ix[prow - 2]['do'] - self.positionTrend.ix[prow - 2]['ko']):
-                    self.buyFlag = 1
+                self.buyFlag = 1
                 pass
         elif self.trendList[-1]==-1 and self.trendList[-2]==1:#出现下跌行情
             barrow = self.combindBar.shape[0]
@@ -422,7 +421,6 @@ class Mystrategy(StrategyBase):
                 self.trendPeriod = 0
             else:
                 if self.trendPeriod < 3: return  # 前3波行情不做3根K线共用的限制，不加入trendPeriod的判断
-                prow = self.positionTrend.shape[0]
                 self.marketFlag = -1
                 self.marketCount += 1
                 self.trendPeriod = 0
@@ -434,10 +432,7 @@ class Mystrategy(StrategyBase):
                     self.positionTrend.ix[prow-2]['ko']>self.positionTrend.ix[prow-3]['ko']):
                     self.buyFlag=-1
               '''
-                # 1.1版本，改为当前K线下多仓减空仓大于上一K线多仓减空仓
-                if (self.positionTrend.ix[prow - 1]['ko'] - self.positionTrend.ix[prow - 1]['do']) > \
-                        (self.positionTrend.ix[prow - 2]['ko'] - self.positionTrend.ix[prow - 2]['do']):
-                    self.buyFlag = -1
+                self.buyFlag = -1
                 pass
         else:pass
         # 有行情时，保存行情信息
@@ -454,6 +449,64 @@ class Mystrategy(StrategyBase):
         self.marketList.append(marketInfo)
         pass
 
+    def buyJudge(self,bar):
+        '''
+        买入条件：
+        1、收盘价格在交易区间外才能交易
+        2、第三根最高价格高于第一根
+        3、而且：红绿数值相减连续变大，持续4~5根K线（可设）
+        4、持续3根K线的成交量增加
+        5、而且：
+                1)当第2根的MACD值大于等于第1根MACD值
+                2)或第2根的KDJ值大于等于第1根KDJ值
+                3)或如果当前第二根最低价格低于前一底部形态第二根最低价，而当前第二根MACD或KDJ值大于或等于前一底部形态第二根。
+                4)或如果当前第二根最低价格高于前一底部形态第二根最低价，而当前第二根MACD或KDJ值小于或等于前一底部形态第二根。
+        :param bar:
+        :return:
+        '''
+        # 1.1版本，平仓无交易区间限制，开仓才有交易区间限制
+        # 上涨趋势中，判断是否持有空仓，有的话平掉空仓
+        position = self.get_position(self.exchange_id, self.sec_id, 2)
+        if position:
+            self.close_short(self.exchange_id, self.sec_id, 0, position.volume)
+        # 加入交易区间的限制，在交易区间外才交易，或者无交易区间（high<=low)
+        #1.1加入底部形态第3根K线最高价必须高于第1根K线的最高价，同时第3根K线的成交量必须大于第2根
+        prow = self.positionTrend.shape[0]
+        crow= self.combindBar.shape[0]
+        firstHigh=self.combindBar.ix[crow-3]['high']
+        thirdHigh=self.combindBar.ix[crow-1]['high']
+        secondVolume=self.combindBar.ix[crow-2]['volume']
+        thirdVolume=self.combindBar.ix[crow-1]['volume']
+        if (self.positionTrend.ix[prow - 1]['do'] - self.positionTrend.ix[prow - 1]['ko']) > \
+            (self.positionTrend.ix[prow - 2]['do'] - self.positionTrend.ix[prow - 2]['ko']) and \
+            (bar.close > self.tradeZoneHigh or bar.close < self.tradeZoneLow or self.tradeZoneHigh <= self.tradeZoneLow) and \
+            (thirdHigh > firstHigh and thirdVolume>secondVolume):
+                # 买多
+                self.open_long(self.exchange_id, self.sec_id, 0, 1)
+        pass
+
+    def sellJudge(self,bar):
+        # 1.1版本，平仓无交易区间限制，开仓才有交易区间限制
+        # 下跌趋势中，判断是否持有多仓，有的话平掉多仓
+        position = self.get_position(self.exchange_id, self.sec_id, 1)
+        if position:
+            self.close_long(self.exchange_id, self.sec_id, 0, position.volume)
+        # 加入交易区间的限制，在交易区间外才交易，或者无交易区间（high<=low)
+        #1.1加入,顶部形态第3根K线的最低价必须低于第1根K线的最低价，同时第3根K线的成交量必须大于第2根K线的成交量
+        prow = self.positionTrend.shape[0]
+        crow = self.combindBar.shape[0]
+        firstLow=self.combindBar.ix[crow-3]['low']
+        thirdLow=self.combindBar.ix[crow-1]['low']
+        secondVolume=self.combindBar.ix[crow-2]['volume']
+        thirdVolume=self.combindBar.ix[crow-1]['volume']
+        # 1.1版本，改为当前K线下多仓减空仓大于上一K线多仓减空仓
+        if (self.positionTrend.ix[prow - 1]['ko'] - self.positionTrend.ix[prow - 1]['do']) > \
+            (self.positionTrend.ix[prow - 2]['ko'] - self.positionTrend.ix[prow - 2]['do']) and \
+            (bar.close > self.tradeZoneHigh or bar.close < self.tradeZoneLow or self.tradeZoneHigh <= self.tradeZoneLow) and \
+            (thirdLow<firstLow and thirdVolume>secondVolume):
+            # 多空，平多
+            self.open_short(self.exchange_id, self.sec_id, 0, 1)
+        pass
     #插入n个空bar，用来填补出来无交易时空帧的情况
     #插入规则：
     #       high、low、position跟上一帧保持一致
@@ -473,11 +526,62 @@ class Mystrategy(StrategyBase):
             bar.high=self.dailyBar.ix[rownum]['high']
             bar.low=self.dailyBar.ix[rownum]['low']
             bar.position=self.dailyBar.ix[rownum]['position']
+            bar.volume=self.dailyBar.ix[rownum]['volume']
             self.update_dailyBar(bar)
             if(datetime.datetime.fromtimestamp(bar.utc_time).minute% self.K_min==0):
                 self.update_dailyBarMin(bar)
                 pass
             i-=1
+        pass
+
+    def prepareMACD(self):
+        '''
+        在dataPrepare准备完后，一次计算已有数据的MACD，保存到self.MACD中
+        self.MACD=pd.DataFrame(columns=['strdatetime','utcdatetime','close','MACD','DEA','HIST','sema','lema'])
+        :return:
+        '''
+        self.MACD['strdatetime']=self.dailyBarMin['strdatetime']
+        self.MACD['utcdatetime']=self.dailyBarMin['utcdatetime']
+        self.MACD['close']=self.dailyBarMin['close']
+        self.MACD['MACD'],self.MACD['DEA'],self.MACD['HIST'],self.MACD['sema'],self.MACD['lema']\
+            =ma.calMACD(self.MACD['close'])
+        pass
+
+    def updateMACD(self):
+        '''
+        根据dailyBarMin最后一行的数据，计算出新的MACD，并更新到MACD表中
+        :return:
+        '''
+        brow=self.dailyBarMin.shape[0]
+        mrow=self.MACD.shape[0]
+        laststrdatetime=self.dailyBarMin.ix[brow-1,'strdatetime']
+        lastutcdatetime = self.dailyBarMin.ix[brow - 1, 'utcdatetime']
+        lastClose=self.dailyBarMin.ix[brow-1,'close']
+        lastdea=self.MACD.ix[mrow-1,'DEA']
+        lastsema=self.MACD.ix[mrow-1,'sema']
+        lastlema=self.MACD.ix[mrow-1,'lema']
+        macd,dea,hist,sema,lema=ma.calNewMACD(lastClose,lastdea,lastsema,lastlema)
+        self.MACD.loc[mrow] = [laststrdatetime,lastutcdatetime, lastClose, macd, dea, hist, sema,lema]
+        pass
+
+    def prepareKDJ(self):
+        '''
+        在dataPrepare准备完后，一次计算已有数据的KDJ，保存到self.KDJ中
+        self.KDJ=pd.DataFrame(columns=['strdatetime','utcdatetime','lowL','highL','RSV','KDJ_K','KDJ_D','KDJ_J'])
+        :return:
+        '''
+        self.KDJ['strdatetime']=self.dailyBarMin['strdatetime']
+        self.KDJ['utcdatetime']=self.dailyBarMin['utcdatetime']
+        self.KDJ['lowL'],self.KDJ['highL'],self.KDJ['RSV'],self.KDJ['KDJ_K'],self.KDJ['KDJ_D'],self.KDJ['KDJ_J']\
+            =ma.calKDJ(self.dailyBarMin)
+        pass
+
+    def updateKDJ(self):
+        '''
+        根据dailyBarMin最后一行的数据，计算出新的KDJ，并更新到KDJ表中
+        :return:
+        '''
+        ma.calNewKDJ(self.dailyBarMin,self.KDJ)
         pass
 
     #准备好画布，分成1列3行，第一个为原始K线，第二个为合并后的K线，第三个为仓位走势图
