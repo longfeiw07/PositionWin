@@ -47,19 +47,21 @@ class Mystrategy(StrategyBase):
         self.positionTrend = pd.DataFrame(columns=['strdatetime','utcdatetime', 'open', 'high', 'low', 'close', 'position', 'volume','do', 'ko','delta']) #保存持仓数据，总共5列：date,time,symbol,longPosition,shortPosition
         self.dailyBar=pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position','volume'])        #保存原始的1分钟Bar数据
         self.dailyBarMin=pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position','volume'])     #保存多分钟合并的Bar数据，分钟数由K_min确定
-        self.combindBar =pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position','volume'])      #合并后的数据
+        self.combindBar =pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position','volume','MACD','KDJ_K','KDJ_D','KDJ_J'])      #合并后的数据
         self.MACD=pd.DataFrame(columns=['strdatetime','utcdatetime','close','MACD','DEA','HIST','sema','lema'])
         self.KDJ=pd.DataFrame(columns=['strdatetime','utcdatetime','lowL','highL','RSV','KDJ_K','KDJ_D','KDJ_J'])
         self.K_trend=0 #当前的趋势，1表示上升，-1表示下降，初始为0
         self.marketFlag=0 #上一波行情标志，1为反弹上涨，-1为到顶下跌
-        self.marketList = [] #用来保存每一次趋势的内容，包序号，x轴位置，时间，最高价，最低价，现价，类型
-                            #{'index','xpos','time','phigh','plow','pnow','type'}
+        self.buyMarketList = [] #用来保存每一次买趋势的内容，包序号，x轴位置，时间，最高价，最低价，现价，类型
+        self.sellMarketList = []#保存每一次卖趋势的内容
         self.trendList=[] #用来保存每一次趋势判断的情况
         self.trendPeriod=0 #距离上波行情经过了几根K线
         self.marketCount=0 #表示经过了几波行情
         self.tradeZoneHigh=0 #保存交易区间的上端点
         self.tradeZoneLow=0#保存交易区间的下端点，如果tradeZoneHige<=tradeZoneLow，表示当日没有非交易区间限制
         self.buyFlag=0#买卖标识，-1为卖，1为买
+
+        self.buyInfo = pd.DataFrame(columns=['index', 'xpos', 'time', 'type', 'result'])
 
         #self.K_min=3 #采用多少分钟的K线，默认为3分钟，在on_bar中会判断并进行合并
         self.K_min=self.config.getint('para', 'K_min') or 3
@@ -71,13 +73,15 @@ class Mystrategy(StrategyBase):
         self.tradeEndHour=self.config.getint('para','tradeEndHour')
         self.tradeEndMin=self.config.getint('para','tradeEndMin')
         self.backwardDay=self.config.getint('para','backwardDay')
+        self.positionChangeK=self.config.getint('para','positionChangeK')
+        self.volumeChangeK=self.config.getint('para','volumeChangeK')
 
         self.K_minCounter=0 #用来计算当前是合并周期内的第几根K线，在onBar中做判断使用
         self.last_update_time=datetime.datetime.now() #保存上一次 bar更新的时间，用来帮助判断是否出现空帧
 
         self.exchange_id,self.sec_id,buf=self.subscribe_symbols.split('.',2)
         #准备好数据，回测模式下不用准备
-        if self.mode != 4:self.dataPrepare()
+        self.dataPrepare()
         #self.pltPrepare()
 
     def on_login(self):
@@ -87,7 +91,10 @@ class Mystrategy(StrategyBase):
         pass
 
     def on_backtest_finish(self, indicator):
-        self.positionTrend.to_csv("position"+'.csv', encoding='GB18030')
+        self.positionTrend.to_csv("backtestPosition"+'.csv', encoding='GB18030')
+        self.MACD.to_csv('backtestMACD.csv')
+        self.KDJ.to_csv('backtestKDJ.csv')
+        self.buyInfo.to_csv('buyinfo.csv')
         pass
 
     def on_bar(self, bar):
@@ -103,8 +110,21 @@ class Mystrategy(StrategyBase):
         if timenow.hour==self.tradeEndHour and timenow.minute==self.tradeEndMin:
             self.closeAllPosition()
             #self.dailyBar.to_csv("dailyBar"+timenow.strftime("%Y%m%d")+'.csv',encoding='GB18030')
-            #self.dailyBarMin.to_csv("dailyBarMin" + timenow.strftime("%Y%m%d") + '.csv', encoding='GB18030')
-            #self.combindBar.to_csv("combindBar"+timenow.strftime("%Y%m%d")+'.csv',encoding='GB18030')
+            self.dailyBarMin.to_csv("dailyBarMin" + timenow.strftime("%Y%m%d") + '.csv', encoding='GB18030')
+            self.combindBar.to_csv("combindBar"+timenow.strftime("%Y%m%d")+'.csv',encoding='GB18030')
+            dfbuy=pd.DataFrame(columns=['strdatetime','utcdatetime','open','high','low','close','position','volume','MACD','KDJ_K','KDJ_D','KDJ_J'])
+            i=self.buyInfo.shape[0]
+            for l in self.buyMarketList:
+                dfbuy=dfbuy.append(l['K'])
+                marketInfo = [l['index'],l['xpos'],l['time'],l['type'],l['result']]
+                self.buyInfo.loc[i]=marketInfo
+                i+=1
+            for l2 in self.sellMarketList:
+                dfbuy=dfbuy.append(l2['K'])
+                marketInfo = [l2['index'],l2['xpos'],l2['time'],l2['type'],l2['result']]
+                self.buyInfo.loc[i]=marketInfo
+                i+=1
+            dfbuy.to_csv("buylist"+timenow.strftime("%Y%m%d")+'.csv')
             print timenow.strftime("%Y%m%d")
             print self.tradeZoneHigh
             print self.tradeZoneLow
@@ -123,18 +143,18 @@ class Mystrategy(StrategyBase):
         if (barMin+1) % self.K_min==0 and self.K_minCounter>=self.K_min:
             self.update_dailyBarMin(bar)
             #self.pltUpdate('up')
-            if self.combineBar() and self.mode!=4:self.pltUpdate()#更新combinedBar
             self.update_Position() #更新positionTrend,postion要使用dailyBarMin来计算，所以要在update_dailyBarMin后调用
             self.updateMACD()
             self.updateKDJ()
-            #self.pltUpdate('down')#更新图片
-            self.trendJudge()#趋势判断，在趋势判断中会给出buyFlag
-            if self.buyFlag==1 :                             #买
-                self.buyJudge(bar)
-                self.buyFlag=0
-            elif self.buyFlag==-1:                          #卖
-                self.sellJudge(bar)
-                self.buyFlag=0
+            if self.combineBar(): # 更新combinedBar,如有合并，返回true,再进行趋势的判断
+                #self.pltUpdate('down')#更新图片
+                self.trendJudge()#趋势判断，在趋势判断中会给出buyFlag
+                if self.buyFlag==1 :                             #买
+                    self.buyJudge(bar)
+                    self.buyFlag=0
+                elif self.buyFlag==-1:                          #卖
+                    self.sellJudge(bar)
+                    self.buyFlag=0
         else:
             pass
         pass
@@ -172,12 +192,12 @@ class Mystrategy(StrategyBase):
                 self.update_Position()  # 更新positionTrend
         self.prepareMACD()
         self.prepareKDJ()
-        self.dataReset()
         #下面要再做实盘下当天数据的处理
         if self.mode==2:
             pass
         if rownum>0:
             self.last_update_time = datetime.datetime.fromtimestamp(self.dailyBar.ix[rownum-1,'utcdatetime'])
+        self.dataReset()
         print("------------------------data prepared-----------------------------")
 #        self.dailyBar.to_csv('d:\dailyBar.csv', encoding='GB18030')
 #        self.dailyBarMin.to_csv('d:\dailyBarMin.csv', encoding='GB18030')
@@ -217,7 +237,8 @@ class Mystrategy(StrategyBase):
         cleanDf(self.combindBar)
         self.K_trend=0
         self.marketFlag=0
-        cleanList(self.marketList)
+        cleanList(self.buyMarketList)
+        cleanList(self.sellMarketList)
         cleanList(self.trendList)
         self.trendPeriod = 0  # 距离上波行情经过了几根K线
         self.marketCount = 0  # 表示经过了几波行情
@@ -259,7 +280,7 @@ class Mystrategy(StrategyBase):
 
         rownum=self.positionTrend.shape[0] #row是从0开始算
         if rownum<1:
-            databuf=[strdatetime,utcdatetime,open,high,low,close,position,volume,self.lastPositionDo,self.lastPositionKo]
+            databuf=[strdatetime,utcdatetime,open,high,low,close,position,volume,self.lastPositionDo,self.lastPositionKo,self.lastPositionDo-self.lastPositionKo]
         else:
             lastposition=self.positionTrend.ix[rownum-1,'position']
             lastdo=self.positionTrend.ix[rownum-1,'do']
@@ -287,7 +308,8 @@ class Mystrategy(StrategyBase):
                 kk2 = 0
             do = k1 + kk1 + kkk1 + lastdo
             ko = k2 + kk2 + kkk1 + lastko
-            databuf=[strdatetime,utcdatetime, open, high, low, close, position, volume, do, ko]
+            delta=do-ko
+            databuf=[strdatetime,utcdatetime, open, high, low, close, position, volume, do, ko,delta]
 #            print("position updated")
 #            print databuf
         self.positionTrend.loc[rownum]=databuf
@@ -341,35 +363,54 @@ class Mystrategy(StrategyBase):
         if rownum==1:
             #databuf=self.dailyBarMin.iloc[0]
             self.combindBar.loc[0]=self.dailyBarMin.loc[0]
+            self.combindBar.ix[0, 'MACD'] = self.MACD.ix[self.MACD.shape[0] - 1, 'MACD']
+            kdjrow = self.KDJ.shape[0] - 1
+            self.combindBar.ix[0, 'KDJ_K'] = self.KDJ.ix[kdjrow, 'KDJ_K']
+            self.combindBar.ix[0, 'KDJ_D'] = self.KDJ.ix[kdjrow, 'KDJ_D']
+            self.combindBar.ix[0, 'KDJ_J'] = self.KDJ.ix[kdjrow, 'KDJ_J']
 #            print self.dailyBarMin.loc[0]
 #            print self.combindBar.loc[0]
             #self.combindBar.append(pd.Series(databuf))
             self.trendPeriod+=1
             return True
         rownum-=1#定位到最后一行
-        crow=self.combindBar.shape[0]-1
-        lastup=max(self.combindBar.ix[crow]['open'],self.combindBar.ix[crow]['close'])
-        lastdown=min(self.combindBar.ix[crow]['open'],self.combindBar.ix[crow]['close'])
+        crow=self.combindBar.shape[0]
+        lastup=max(self.combindBar.ix[crow-1]['open'],self.combindBar.ix[crow-1]['close'])
+        lastdown=min(self.combindBar.ix[crow-1]['open'],self.combindBar.ix[crow-1]['close'])
         currentup=max(self.dailyBarMin.ix[rownum]['open'],self.dailyBarMin.ix[rownum]['close'])
         currentdown = min(self.dailyBarMin.ix[rownum]['open'], self.dailyBarMin.ix[rownum]['close'])
         if currentup>lastup and currentdown>=lastdown:       #上边高的，趋势判定为上升
-            self.combindBar.loc[self.combindBar.shape[0]]=self.dailyBarMin.iloc[-1]
+            self.combindBar.loc[crow]=self.dailyBarMin.iloc[-1]
+            self.combindBar.ix[crow,'MACD']=self.MACD.ix[self.MACD.shape[0]-1,'MACD']
+            kdjrow=self.KDJ.shape[0]-1
+            self.combindBar.ix[crow,'KDJ_K']=self.KDJ.ix[kdjrow,'KDJ_K']
+            self.combindBar.ix[crow,'KDJ_D']=self.KDJ.ix[kdjrow,'KDJ_D']
+            self.combindBar.ix[crow,'KDJ_J']=self.KDJ.ix[kdjrow,'KDJ_J']
             self.K_trend=1
             self.trendPeriod+=1
             self.trendList.append(self.K_trend)
         elif currentup>lastup and currentdown<lastdown:      #上边高，下边低，加入但趋势保持不变
-            self.combindBar.loc[self.combindBar.shape[0]] = self.dailyBarMin.iloc[-1]
+            self.combindBar.loc[crow] = self.dailyBarMin.iloc[-1]
+            self.combindBar.ix[crow, 'MACD'] = self.MACD.ix[self.MACD.shape[0] - 1, 'MACD']
+            kdjrow = self.KDJ.shape[0] - 1
+            self.combindBar.ix[crow, 'KDJ_K'] = self.KDJ.ix[kdjrow, 'KDJ_K']
+            self.combindBar.ix[crow, 'KDJ_D'] = self.KDJ.ix[kdjrow, 'KDJ_D']
+            self.combindBar.ix[crow, 'KDJ_J'] = self.KDJ.ix[kdjrow, 'KDJ_J']
             self.trendPeriod+=1
             self.trendList.append(self.K_trend)
         elif currentdown<lastdown: #上边低，且下边低的，趋势判定为下降
-            self.combindBar.loc[self.combindBar.shape[0]] = self.dailyBarMin.iloc[-1]
+            self.combindBar.loc[crow] = self.dailyBarMin.iloc[-1]
+            self.combindBar.ix[crow, 'MACD'] = self.MACD.ix[self.MACD.shape[0] - 1, 'MACD']
+            kdjrow = self.KDJ.shape[0] - 1
+            self.combindBar.ix[crow, 'KDJ_K'] = self.KDJ.ix[kdjrow, 'KDJ_K']
+            self.combindBar.ix[crow, 'KDJ_D'] = self.KDJ.ix[kdjrow, 'KDJ_D']
+            self.combindBar.ix[crow, 'KDJ_J'] = self.KDJ.ix[kdjrow, 'KDJ_J']
             self.K_trend=-1
             self.trendPeriod+=1
             self.trendList.append(self.K_trend)
         else:#上边低，且下边高的，合并（即不加入combindBar），趋势不变
              return False
         return True
-        pass
 
     #行情判断
     #趋势是每根K线都做判断，行情是trendPeriod大于3才做判断
@@ -389,24 +430,19 @@ class Mystrategy(StrategyBase):
                 self.tradeZoneHigh=self.combindBar.ix[0]['high']
                 self.tradeZoneLow=self.combindBar.ix[barrow-2]['low']#取倒数第2根，即底点的最低值
                 self.marketCount=1
+                self.marketFlag=1
             elif self.marketCount<3:
                 self.tradeZoneLow=max(self.tradeZoneLow,self.combindBar.ix[barrow-2]['low'])
                 self.trendPeriod=0
                 self.marketCount+=1
+                self.marketFlag=1
             else:
-                if self.trendPeriod < 3: return #前3波行情不做3根K线共用的限制，不加入trendPeriod的判断
+                if self.trendPeriod < 3:
+                    self.marketFlag=0
+                    return #前3波行情不做3根K线共用的限制，不加入trendPeriod的判断
                 self.trendPeriod = 0
                 self.marketCount += 1
                 self.marketFlag = 1
-                '''
-                #做买操作，判断多仓是否连续三次增仓，或者空仓连续三次减仓
-                if (self.positionTrend.ix[prow-1]['do']>self.positionTrend.ix[prow-2]['do'] and
-                    self.positionTrend.ix[prow-2]['do']>self.positionTrend.ix[prow-3]['do']) or\
-                    (self.positionTrend.ix[prow-1]['ko']<self.positionTrend.ix[prow-2]['ko'] and
-                    self.positionTrend.ix[prow-2]['ko']<self.positionTrend.ix[prow-3]['ko']):
-                    self.buyFlag=1
-              '''
-                #1.1版本，改为当前K线下多仓减空仓大于上一K线多仓减空仓
                 self.buyFlag = 1
                 pass
         elif self.trendList[-1]==-1 and self.trendList[-2]==1:#出现下跌行情
@@ -415,47 +451,46 @@ class Mystrategy(StrategyBase):
                 self.tradeZoneLow=self.combindBar.ix[0]['low']
                 self.tradeZoneHigh=self.combindBar.ix[barrow-2]['high']#取顶点的最高值
                 self.marketCount = 1
+                self.marketFlag=-1
             elif self.marketCount<3:
                 self.tradeZoneHigh=min(self.tradeZoneHigh,self.combindBar.ix[barrow-2]['high'])
                 self.marketCount += 1
                 self.trendPeriod = 0
+                self.marketFlag=-1
             else:
-                if self.trendPeriod < 3: return  # 前3波行情不做3根K线共用的限制，不加入trendPeriod的判断
+                if self.trendPeriod < 3:
+                    self.marketFlag=0
+                    return  # 前3波行情不做3根K线共用的限制，不加入trendPeriod的判断
                 self.marketFlag = -1
                 self.marketCount += 1
                 self.trendPeriod = 0
-                '''
-                #做卖操作，判断多仓是否连续三次减仓，或者空仓连续三次增仓
-                if (self.positionTrend.ix[prow-1]['do']<self.positionTrend.ix[prow-2]['do'] and
-                    self.positionTrend.ix[prow-2]['do']<self.positionTrend.ix[prow-3]['do']) or\
-                    (self.positionTrend.ix[prow-1]['ko']>self.positionTrend.ix[prow-2]['ko'] and
-                    self.positionTrend.ix[prow-2]['ko']>self.positionTrend.ix[prow-3]['ko']):
-                    self.buyFlag=-1
-              '''
                 self.buyFlag = -1
                 pass
-        else:pass
         # 有行情时，保存行情信息
+        #包括本次行情3根K线combineBar
         row=self.dailyBarMin.shape[0]
         bar = self.dailyBarMin.iloc[row - 2]
         marketInfo = {"index": self.marketCount,
                       'xpos': row-2,
-                      'time': bar.utcdatetime,
-                      'phigh':bar.high,
-                      'plow': bar.low,
-                      'pnow': bar.low if self.marketFlag==1 else bar.high,
-                      'type': self.marketFlag
+                      'time': bar['strdatetime'],
+                      'K':self.combindBar.iloc[-3:].reset_index(drop=True),
+                      'type': self.marketFlag,
+                      'result': 'init'
                       }
-        self.marketList.append(marketInfo)
+        if self.marketFlag==1:
+            self.buyMarketList.append(marketInfo)
+        elif self.marketFlag==-1:
+            self.sellMarketList.append(marketInfo)
+        self.marketFlag=0
         pass
 
     def buyJudge(self,bar):
         '''
-        买入条件：
+        买多条件：
         1、收盘价格在交易区间外才能交易
         2、第三根最高价格高于第一根
-        3、而且：红绿数值相减连续变大，持续4~5根K线（可设）
-        4、持续3根K线的成交量增加
+        3、而且：红绿数值相减连续变大，持续4~5根自然K线（可设）
+        4、持续3根自然K线的成交量增加
         5、而且：
                 1)当第2根的MACD值大于等于第1根MACD值
                 2)或第2根的KDJ值大于等于第1根KDJ值
@@ -469,44 +504,181 @@ class Mystrategy(StrategyBase):
         position = self.get_position(self.exchange_id, self.sec_id, 2)
         if position:
             self.close_short(self.exchange_id, self.sec_id, 0, position.volume)
-        # 加入交易区间的限制，在交易区间外才交易，或者无交易区间（high<=low)
-        #1.1加入底部形态第3根K线最高价必须高于第1根K线的最高价，同时第3根K线的成交量必须大于第2根
-        prow = self.positionTrend.shape[0]
-        crow= self.combindBar.shape[0]
-        firstHigh=self.combindBar.ix[crow-3]['high']
-        thirdHigh=self.combindBar.ix[crow-1]['high']
-        secondVolume=self.combindBar.ix[crow-2]['volume']
-        thirdVolume=self.combindBar.ix[crow-1]['volume']
-        if (self.positionTrend.ix[prow - 1]['do'] - self.positionTrend.ix[prow - 1]['ko']) > \
-            (self.positionTrend.ix[prow - 2]['do'] - self.positionTrend.ix[prow - 2]['ko']) and \
-            (bar.close > self.tradeZoneHigh or bar.close < self.tradeZoneLow or self.tradeZoneHigh <= self.tradeZoneLow) and \
-            (thirdHigh > firstHigh and thirdVolume>secondVolume):
-                # 买多
-                self.open_long(self.exchange_id, self.sec_id, 0, 1)
+
+        presentmarket=self.buyMarketList[-1]
+        pminfo=presentmarket['K']
+        lastmarket=self.buyMarketList[-2]
+        lminfo=lastmarket['K']
+        #条件1：收盘价格在交易区间外才能交易
+        if (True or bar.close > self.tradeZoneHigh or bar.close < self.tradeZoneLow or self.tradeZoneHigh <= self.tradeZoneLow) :
+            #条件2：第三根最高价格高于第一根
+            if(pminfo.ix[2,'high']>pminfo.ix[0,'high']):
+                #条件3：红绿数值相减连续变大，持续4~5根自然K线（可设）,前后必须大于，中间可以等于
+                prow=self.positionTrend.shape[0]
+                deltalist=self.positionTrend.ix[prow-self.positionChangeK:,'delta'].reset_index(drop=True)
+                bigflag=True
+                for i in range(2,self.positionChangeK-1):
+                    if deltalist[i]<deltalist[i-1]:bigflag=False
+                if deltalist[1]>deltalist[0] and deltalist[self.positionChangeK-1]>deltalist[self.positionChangeK-2] and bigflag:
+                    #4、持续3根自然K线的成交量增加
+                    drow=self.dailyBarMin.shape[0]
+                    volumeList=self.dailyBarMin.ix[drow-self.volumeChangeK:,'volume'].reset_index(drop=True)
+                    volumeflag=True
+                    for i in range(1,len(volumeList)):
+                        if volumeList[i]<=volumeList[i-1]:volumeflag=False
+                    if volumeflag :
+                        '''
+                        条件5：以下有一个条件满足即可：
+                        1)当第2根的MACD值大于等于第1根MACD值
+                        2)或第2根的KDJ值大于等于第1根KDJ值
+                        3)或如果当前第二根最低价格低于前一底部形态第二根最低价，而当前第二根MACD或KDJ值大于或等于前一底部形态第二根。
+                        4)或如果当前第二根最低价格高于前一底部形态第二根最低价，而当前第二根MACD或KDJ值小于或等于前一底部形态第二根。
+                    '''
+                        mkflag=False
+                        result=''
+                        #条件5.1：第2根MACD大于第1根MACD
+                        if pminfo.ix[1,'MACD']>=pminfo.ix[0,'MACD']:
+                            mkflag=True
+                        else:
+                            result=result+'5.1 MACD fail'
+                        #条件5.2：第2根的KDJ值大于等于第1根KDJ值
+                        if pminfo.ix[1,'KDJ_K']>=pminfo.ix[0,'KDJ_K'] or pminfo.ix[1,'KDJ_D']>=pminfo.ix[0,'KDJ_D'] or pminfo.ix[1,'KDJ_J']>=pminfo.ix[0,'KDJ_J']:
+                            mkflag=True
+                        else:
+                            result=result+',5.2 KDJ_K fail'
+                        #条件5.3:如果当前第二根最低价格低于前一底部形态第二根最低价，而当前第二根MACD或KDJ值大于或等于前一底部形态第二根
+                        if pminfo.ix[1,'low']<lminfo.ix[1,'low']:
+                            if pminfo.ix[1,'MACD']>=lminfo.ix[1,'MACD']:mkflag=True
+                            else:result=result+',5.31 fail'
+                            if pminfo.ix[1, 'KDJ_K'] >= lminfo.ix[1, 'KDJ_K'] or pminfo.ix[1, 'KDJ_D'] >= lminfo.ix[
+                                1, 'KDJ_D'] or pminfo.ix[1, 'KDJ_J'] >= lminfo.ix[1, 'KDJ_J']:
+                                mkflag=True
+                            else:result=result+',5.32 fail'
+                        else:
+                            result=result+',5.3 fail'
+                        #条件5.4：如果当前第二根最低价格高于前一底部形态第二根最低价，而当前第二根MACD或KDJ值小于或等于前一底部形态第二根
+                        if pminfo.ix[1,'low']>lminfo.ix[1,'low']:
+                            if pminfo.ix[1,'MACD']<=lminfo.ix[1,'MACD']:mkflag=True
+                            else:result=result+',5.41 fail'
+                            if pminfo.ix[1, 'KDJ_K'] <= lminfo.ix[1, 'KDJ_K'] or pminfo.ix[1, 'KDJ_D'] <= lminfo.ix[
+                                1, 'KDJ_D'] or pminfo.ix[1, 'KDJ_J'] <= lminfo.ix[1, 'KDJ_J']:
+                                mkflag=True
+                            else:result=result+',5.42 fail'
+                        else:
+                            result=result+',5.4 fail'
+                        if mkflag:
+                            # 买多
+                            self.open_long(self.exchange_id, self.sec_id, 0, 1)
+                            result='buy success'
+                        self.buyMarketList[-1]['result'] = result
+                    else:#条件4：成交量没有连续变大导致失败
+                        self.buyMarketList[-1]['result']='4_volumeLimited'
+                else:#条件3：仓量没有连续变大导致失败
+                    self.buyMarketList[-1]['result']='3_positionLimited'
+            else:#条件2：最高价限制导致失败
+                self.buyMarketList[-1]['result']='2_highPriceLimited'
+        else:#条件1：区间限制导致失败
+            self.buyMarketList[-1]['result']='1_tradeZoneLimited'
         pass
 
     def sellJudge(self,bar):
+        '''
+        买空条件：
+        1、收盘价格在交易区间外才能交易
+        2、第三根最低价格低于第一根
+        3、而且：红绿数值相减连续变小，持续4~5根自然K线（可设）
+        4、持续3根自然K线的成交量增加
+        5、而且：
+                1)当第2根的MACD值小于等于第1根MACD值
+                2)或第2根的KDJ值小于等于第1根KDJ值
+                3)或如果当前第二根最高价格高于前一底部形态第二根最高价，而当前第二根MACD或KDJ值小于或等于前一底部形态第二根。
+                4)或如果当前第二根最高价格低于前一底部形态第二根最高价，而当前第二根MACD或KDJ值大于或等于前一底部形态第二根。
+        :param bar:
+        :return:
+         '''
         # 1.1版本，平仓无交易区间限制，开仓才有交易区间限制
         # 下跌趋势中，判断是否持有多仓，有的话平掉多仓
         position = self.get_position(self.exchange_id, self.sec_id, 1)
         if position:
             self.close_long(self.exchange_id, self.sec_id, 0, position.volume)
-        # 加入交易区间的限制，在交易区间外才交易，或者无交易区间（high<=low)
-        #1.1加入,顶部形态第3根K线的最低价必须低于第1根K线的最低价，同时第3根K线的成交量必须大于第2根K线的成交量
-        prow = self.positionTrend.shape[0]
-        crow = self.combindBar.shape[0]
-        firstLow=self.combindBar.ix[crow-3]['low']
-        thirdLow=self.combindBar.ix[crow-1]['low']
-        secondVolume=self.combindBar.ix[crow-2]['volume']
-        thirdVolume=self.combindBar.ix[crow-1]['volume']
-        # 1.1版本，改为当前K线下多仓减空仓大于上一K线多仓减空仓
-        if (self.positionTrend.ix[prow - 1]['ko'] - self.positionTrend.ix[prow - 1]['do']) > \
-            (self.positionTrend.ix[prow - 2]['ko'] - self.positionTrend.ix[prow - 2]['do']) and \
-            (bar.close > self.tradeZoneHigh or bar.close < self.tradeZoneLow or self.tradeZoneHigh <= self.tradeZoneLow) and \
-            (thirdLow<firstLow and thirdVolume>secondVolume):
-            # 多空，平多
-            self.open_short(self.exchange_id, self.sec_id, 0, 1)
+
+        presentmarket = self.sellMarketList[-1]
+        pminfo = presentmarket['K']
+        lastmarket = self.sellMarketList[-2]
+        lminfo = lastmarket['K']
+        # 条件1：收盘价格在交易区间外才能交易
+        if (True or bar.close > self.tradeZoneHigh or bar.close < self.tradeZoneLow or self.tradeZoneHigh <= self.tradeZoneLow):
+            # 条件2：第三根最低价格低于第一根
+            if (pminfo.ix[2, 'low'] < pminfo.ix[0, 'low']):
+                # 条件3：红绿数值相减连续变小，持续4~5根自然K线（可设）,前后必须小于，中间可以等于
+                prow = self.positionTrend.shape[0]
+                deltalist = self.positionTrend.ix[prow - self.positionChangeK:, 'delta'].reset_index(drop=True)
+                smallflag = True
+                for i in range(2, self.positionChangeK - 1):
+                    if deltalist[i] > deltalist[i - 1]: smallflag = False
+                if deltalist[1] < deltalist[0] and deltalist[self.positionChangeK-1] < deltalist[self.positionChangeK-2] and smallflag:
+                    # 4、持续3根自然K线的成交量增加
+                    drow=self.dailyBarMin.shape[0]
+                    volumeList = self.dailyBarMin.ix[drow - self.volumeChangeK:, 'volume'].reset_index(drop=True)
+                    volumeflag = True
+                    for i in range(1, len(volumeList)):
+                        if volumeList[i] <= volumeList[i - 1]: volumeflag = False
+                    if volumeflag:
+                        '''
+                        1)当第2根的MACD值小于等于第1根MACD值
+                        2)或第2根的KDJ值小于等于第1根KDJ值
+                        3)或如果当前第二根最高价格高于前一底部形态第二根最高价，而当前第二根MACD或KDJ值小于或等于前一底部形态第二根。
+                        4)或如果当前第二根最高价格低于前一底部形态第二根最高价，而当前第二根MACD或KDJ值大于或等于前一底部形态第二根
+                       '''
+                        mkflag = False
+                        result = ''
+                        # 条件5.1：第2根MACD小于第1根MACD
+                        if pminfo.ix[1, 'MACD'] <= pminfo.ix[0, 'MACD']:
+                            mkflag = True
+                        else:
+                            result=result+'5.1 MACD fail'
+                        # 条件5.2：第2根的KDJ值小于等于第1根KDJ值
+                        if pminfo.ix[1, 'KDJ_K'] <= pminfo.ix[0, 'KDJ_K'] or pminfo.ix[1, 'KDJ_D'] <= pminfo.ix[
+                                0, 'KDJ_D'] or pminfo.ix[1, 'KDJ_J'] <= pminfo.ix[0, 'KDJ_J']:
+                            mkflag = True
+                        else:
+                            result=result+',5.2 KDJ_K fail'
+                        # 条件5.3:如果当前第二根最高价格高于前一底部形态第二根最高价，而当前第二根MACD或KDJ值小于或等于前一底部形态第二根
+                        if pminfo.ix[1, 'high'] > lminfo.ix[1, 'high']:
+                            if pminfo.ix[1, 'MACD'] <= lminfo.ix[1, 'MACD']: mkflag = True
+                            else:  result = result + ',5.31 fail'
+                            if pminfo.ix[1, 'KDJ_K'] <= lminfo.ix[1, 'KDJ_K'] or pminfo.ix[1, 'KDJ_D'] <= lminfo.ix[
+                                    1, 'KDJ_D'] or pminfo.ix[1, 'KDJ_J'] <= lminfo.ix[1, 'KDJ_J']:
+                                mkflag = True
+                            else: result = result + ',5.32 fail'
+                        else:
+                            result = result + ',5.3 fail'
+                        # 条件5.4：如果当前第二根最高价格低于前一底部形态第二根最高价，而当前第二根MACD或KDJ值大于或等于前一底部形态第二根
+                        if pminfo.ix[1, 'high'] < lminfo.ix[1, 'high']:
+                            if pminfo.ix[1, 'MACD'] >= lminfo.ix[1, 'MACD']: mkflag = True
+                            else: result=result+',5.41 fail'
+                            if pminfo.ix[1, 'KDJ_K'] >= lminfo.ix[1, 'KDJ_K'] or pminfo.ix[1, 'KDJ_D'] >= lminfo.ix[
+                                    1, 'KDJ_D'] or pminfo.ix[1, 'KDJ_J'] >= lminfo.ix[1, 'KDJ_J']:
+                                mkflag = True
+                            else:result=result+',5.42 fail'
+                        else:
+                            result=result+',5.4 fail'
+                        if mkflag:
+                            # 开空
+                            self.open_short(self.exchange_id, self.sec_id, 0, 1)
+                            result='sell success'
+                        self.sellMarketList[-1]['result'] = result
+                    else:#条件4：成交量没有连续变大导致失败
+                        self.sellMarketList[-1]['result']='4_volumeLimited'
+                else:#条件3：仓量没有连续变大导致失败
+                    self.sellMarketList[-1]['result']='3_positionLimited'
+            else:#条件2：最高价限制导致失败
+                self.sellMarketList[-1]['result']='2_highPriceLimited'
+        else:#条件1：区间限制导致失败
+            self.sellMarketList[-1]['result']='1_tradeZoneLimited'
         pass
+
+
     #插入n个空bar，用来填补出来无交易时空帧的情况
     #插入规则：
     #       high、low、position跟上一帧保持一致
@@ -598,9 +770,9 @@ class Mystrategy(StrategyBase):
             # 画出交易区间
             self.plotSet['up'].plotTradeZone(self.tradeZoneHigh, self.tradeZoneLow)
             self.plotSet['mid'].plotTradeZone(self.tradeZoneHigh, self.tradeZoneLow)
-        if len(self.marketList)>0   :
+        if len(self.buyMarketList)>0   :
             #在每个行情点写出价格
-            for ml in self.marketList:
+            for ml in self.buyMarketList:
                 self.plotSet['up'].plotPrice(ml['xpos'],ml['phigh'],ml['plow'],ml['type'])
         #plt.show()
         pass
@@ -645,9 +817,9 @@ class Mystrategy(StrategyBase):
             # 画出交易区间
             self.plotSet['up'].plotTradeZone(self.tradeZoneHigh, self.tradeZoneLow)
             self.plotSet['mid'].plotTradeZone(self.tradeZoneHigh, self.tradeZoneLow)
-        if len(self.marketList) > 0:
+        if len(self.buyMarketList) > 0:
             # 在每个行情点写出价格
-            for ml in self.marketList:
+            for ml in self.buyMarketList:
                 self.plotSet['up'].plotPrice(ml['xpos'], ml['phigh'], ml['plow'], ml['type'])
         self._Fig.savefig(self.last_update_time.strftime("%Y%m%d")+str(self.marketCount) + ".jpg")
         plt.close('all')
